@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Lane 核查查看器</title>
+<style>
+  :root{
+    --bg:#111318; --panel:#181b22; --panel2:#1f232c; --line:#2b3040;
+    --fg:#e6e8ee; --dim:#8b93a6; --accent:#ffd54a;
+    --missing:#ff4d4d; --break:#ff9f2e; --branch:#c14dff; --count:#3d9bff; --ok:#3fbf6a;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+    font:13px/1.5 -apple-system,"Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+    overflow:hidden;-webkit-font-smoothing:antialiased;}
+  #app{display:grid;grid-template-columns:250px 1fr 340px;height:100vh;}
+
+  /* ---------------- 左栏 ---------------- */
+  #side{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;}
+  .side-head{padding:12px 12px 10px;border-bottom:1px solid var(--line);}
+  .title{font-size:14px;font-weight:600;letter-spacing:.3px;}
+  .sub{color:var(--dim);font-size:11px;margin-top:2px;}
+  .filters{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px;}
+  .chip{padding:3px 8px;border:1px solid var(--line);border-radius:11px;font-size:11px;
+    color:var(--dim);cursor:pointer;user-select:none;transition:.12s;background:transparent;}
+  .chip:hover{border-color:#3f475c;color:var(--fg);}
+  .chip.on{background:#2c3446;border-color:#4a5570;color:#fff;}
+  #search{width:100%;margin-top:9px;padding:6px 9px;background:#12151b;border:1px solid var(--line);
+    border-radius:6px;color:var(--fg);font-size:12px;outline:none;}
+  #search:focus{border-color:#4a5570;}
+  #list{overflow-y:auto;flex:1;padding:6px;min-height:0;}
+  .item{display:flex;gap:9px;padding:7px;border-radius:7px;cursor:pointer;margin-bottom:3px;
+    border:1px solid transparent;transition:.1s;}
+  .item:hover{background:var(--panel2);}
+  .item.on{background:#252c3c;border-color:#46506b;}
+  .item img{width:56px;height:56px;border-radius:4px;object-fit:cover;flex:none;background:#000;}
+  .item .info{min-width:0;flex:1;}
+  .item .cid{font-weight:600;font-size:12px;font-variant-numeric:tabular-nums;}
+  .item .kind{color:var(--dim);font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .badges{display:flex;gap:4px;margin-top:3px;flex-wrap:wrap;}
+  .b{font-size:10px;padding:1px 5px;border-radius:3px;background:#2b3242;color:#a9b2c6;}
+  .b.high{background:#4a1f24;color:#ff9b9b;}
+  .b.med{background:#463a1c;color:#ffd98a;}
+  .b.none{background:#1f3a29;color:#8fdcac;}
+  .b.stable{background:#1d3347;color:#8ec7ff;}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none;margin-top:6px;}
+
+  /* ---------------- 中间画布 ---------------- */
+  #stage{position:relative;overflow:hidden;background:#0a0c10;cursor:grab;}
+  #stage.drag{cursor:grabbing;}
+  #world{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform;}
+  #world img.base{display:block;width:2048px;height:2048px;pointer-events:none;
+    image-rendering:auto;transition:opacity .15s,filter .15s;}
+  #overlay{position:absolute;inset:0;width:2048px;height:2048px;pointer-events:none;}
+  #overlay .lane{fill:none;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke;}
+  #overlay text{font-family:inherit;font-size:15px;font-weight:600;dominant-baseline:middle;}
+  .lbl-bg{fill:rgba(0,0,0,.82);}
+  .hit{fill:none;stroke:transparent;stroke-width:14;pointer-events:stroke;cursor:pointer;}
+
+  #topbar{position:absolute;top:0;left:0;right:0;padding:9px 13px;display:flex;gap:10px;
+    align-items:center;background:linear-gradient(#0a0c10ee,#0a0c10aa 65%,transparent);z-index:5;pointer-events:none;}
+  #topbar>*{pointer-events:auto;}
+  #topbar h2{margin:0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;}
+  .tag{font-size:11px;padding:2px 7px;border-radius:4px;background:#232a38;color:#9aa4ba;}
+  .spacer{flex:1;}
+  .btn{padding:4px 9px;border:1px solid var(--line);background:#1b2029;color:var(--fg);
+    border-radius:5px;font-size:11.5px;cursor:pointer;transition:.1s;}
+  .btn:hover{background:#252c3a;border-color:#4a5570;}
+  .btn.on{background:#33405a;border-color:#5b6d94;}
+
+  /* 图例 / 图层开关 */
+  #layers{position:absolute;left:13px;bottom:13px;background:#14181fdd;backdrop-filter:blur(9px);
+    border:1px solid var(--line);border-radius:8px;padding:9px 11px;z-index:5;font-size:11.5px;
+    min-width:186px;}
+  #layers .lt{font-size:10.5px;color:var(--dim);letter-spacing:.6px;margin-bottom:6px;text-transform:uppercase;}
+  .lrow{display:flex;align-items:center;gap:7px;padding:2.5px 0;cursor:pointer;user-select:none;}
+  .lrow input{accent-color:#5b8dd6;margin:0;cursor:pointer;}
+  .lrow .sw{width:16px;height:3px;border-radius:2px;flex:none;}
+  .lrow .sw.sq{width:11px;height:11px;border-radius:2px;border:1.5px solid;}
+  .lrow:hover{color:#fff;}
+  .slider{display:flex;align-items:center;gap:7px;margin-top:8px;padding-top:7px;border-top:1px solid var(--line);}
+  .slider input{width:100%;accent-color:#5b8dd6;}
+
+  /* ---------------- 右栏 ---------------- */
+  #pane{background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;}
+  .pane-head{padding:11px 13px;border-bottom:1px solid var(--line);}
+  .summary{font-size:12px;line-height:1.6;color:#c4cbdb;}
+  .pane-body{overflow-y:auto;flex:1;padding:9px;min-height:0;}
+  .vrow{display:flex;gap:8px;padding:8px 9px;border-radius:6px;cursor:pointer;margin-bottom:5px;
+    background:#1b202a;border:1px solid transparent;transition:.1s;}
+  .vrow:hover{background:#222836;}
+  .vrow.on{border-color:#5b6d94;background:#252d3d;}
+  .vrow .vk{font-weight:600;font-size:12px;font-variant-numeric:tabular-nums;}
+  .vrow .vp{font-size:10.5px;font-weight:600;letter-spacing:.2px;}
+  .vrow .vc{font-size:10px;color:var(--dim);margin-left:auto;}
+  .vbody{font-size:11.5px;color:#a9b2c6;line-height:1.55;margin-top:5px;}
+  .vbody b{color:#d5dbe8;font-weight:600;}
+  .judge{display:flex;gap:5px;margin-top:7px;}
+  .judge button{padding:3px 9px;border-radius:4px;font-size:11px;cursor:pointer;
+    border:1px solid #3a4257;background:#1e2430;color:#9aa4ba;transition:.1s;}
+  .judge button:hover{border-color:#5b6d94;color:#fff;}
+  .judge button.good.on{background:#1c3d29;border-color:#3fbf6a;color:#8fdcac;}
+  .judge button.bad.on{background:#43202a;border-color:#ff5d7a;color:#ff9db0;}
+  .vrow.verified{opacity:.72;}
+  #prog{font-size:10.5px;color:#8b93a6;margin-top:6px;}
+  #prog b{color:#ffd54a;}
+  .kbd{display:inline-block;padding:0 5px;border:1px solid #3a4257;border-bottom-width:2px;
+    border-radius:3px;font-size:10px;color:#9aa4ba;background:#1e2430;font-family:ui-monospace,monospace;}
+
+  #zoomhud{position:absolute;right:13px;bottom:13px;background:#14181fdd;backdrop-filter:blur(9px);
+    border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--dim);z-index:5;
+    font-variant-numeric:tabular-nums;}
+  .empty{color:var(--dim);text-align:center;padding:30px 10px;font-size:12px;}
+  ::-webkit-scrollbar{width:9px;height:9px;}
+  ::-webkit-scrollbar-thumb{background:#2f3648;border-radius:5px;}
+  ::-webkit-scrollbar-thumb:hover{background:#3d465e;}
+  ::-webkit-scrollbar-track{background:transparent;}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- ============ 左：候选列表 ============ -->
+  <aside id="side">
+    <div class="side-head">
+      <div class="title">Lane 核查</div>
+      <div class="sub" id="counts">—</div>
+      <div class="filters" id="filters"></div>
+      <input id="search" placeholder="搜索 cid / 路 id …">
+    </div>
+    <div id="list"></div>
+  </aside>
+
+  <!-- ============ 中：画布 ============ -->
+  <main id="stage">
+    <div id="world">
+      <img class="base" id="base" alt="">
+      <svg id="overlay" viewBox="0 0 2048 2048"></svg>
+    </div>
+
+    <div id="topbar">
+      <h2 id="ttl">—</h2>
+      <span class="tag" id="ttag"></span>
+      <span class="spacer"></span>
+      <button class="btn" id="prev">◀ 上一个</button>
+      <button class="btn" id="next">下一个 ▶</button>
+      <button class="btn" id="fit">适应窗口</button>
+      <button class="btn" id="one">1:1</button>
+      <button class="btn" id="exp" style="border-color:#3fbf6a;color:#8fdcac">导出核对结果</button>
+    </div>
+
+    <div id="layers">
+      <div class="lt">图层</div>
+      <label class="lrow"><input type="checkbox" id="c-hi" checked>
+        <span class="sw" style="background:#ff3b3b"></span>待核实 Lane</label>
+      <label class="lrow"><input type="checkbox" id="c-ctx" checked>
+        <span class="sw" style="background:#7a8496"></span>周边 Lane（上下文）</label>
+      <label class="lrow"><input type="checkbox" id="c-lbl" checked>
+        <span class="sw sq" style="border-color:#ffd54a;background:transparent"></span>Lane 编号</label>
+      <label class="lrow"><input type="checkbox" id="c-end" checked>
+        <span class="sw sq" style="border-color:#fff;background:transparent"></span>端点</label>
+      <label class="lrow"><input type="checkbox" id="c-cand" checked>
+        <span class="sw sq" style="border-color:#ffd54a;background:transparent"></span>候选点</label>
+      <label class="lrow"><input type="checkbox" id="c-ver" checked>
+        <span class="sw sq" style="border-color:#c14dff;background:transparent"></span>模型结论圈</label>
+      <label class="lrow"><input type="checkbox" id="c-raw">
+        <span class="sw sq" style="border-color:#8b93a6;background:transparent"></span>模型原始点位（虚线）</label>
+      <label class="lrow"><input type="checkbox" id="c-stable" checked>
+        <span class="sw sq" style="border-color:#3d9bff;background:transparent"></span>两轮一致标记</label>
+      <label class="lrow"><input type="checkbox" id="c-solo">
+        <span class="sw" style="background:#3a4257"></span>隐藏周边 Lane</label>
+      <label class="lrow"><input type="checkbox" id="c-vec">
+        <span class="sw sq" style="border-color:#9aa4ba;background:transparent"></span>矢量模式（关掉底图）</label>
+      <div class="slider"><span>底图</span><input type="range" id="opa" min="0" max="100" value="100"></div>
+    </div>
+
+    <div id="zoomhud">—</div>
+  </main>
+
+  <!-- ============ 右：结论 ============ -->
+  <aside id="pane">
+    <div class="pane-head">
+      <div class="summary" id="sum">选择左侧一处候选</div>
+    </div>
+    <div class="pane-body" id="verd"></div>
+  </aside>
+</div>
+
+<script src="viewer_data.js"></script>
+<script>
+const DATA = window.DATA;
+const S = DATA.size;              // 2048
+const COL = {missing_lane:'#ff4d4d', wrong_break:'#ff9f2e', wrong_branch:'#c14dff',
+             wrong_count:'#3d9bff', ok:'#3fbf6a', unreadable:'#8b93a6'};
+const ZH = {missing_lane:'该续未续', wrong_break:'连了但不该连', wrong_branch:'分合流错',
+            wrong_count:'车道数不符', ok:'没问题', unreadable:'看不清'};
+
+const $ = s => document.querySelector(s);
+const el = (t, a={}) => { const e = document.createElementNS(
+  t==='text'||t==='tspan' ? 'http://www.w3.org/2000/svg':'http://www.w3.org/2000/svg', t);
+  for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+/* ---------------- 状态 ---------------- */
+let cur = 0;
+let tf = {x:0, y:0, k:1};
+let focusVerdict = null;
+const filters = {stable:false, problems:false, kind:null};
+
+/* ---------------- 左栏 ---------------- */
+function probCount(c){ return c.verdicts.filter(v=>v.problem && v.problem!=='ok' && v.problem!=='unreadable').length; }
+
+function buildFilters(){
+  const kinds = [...new Set(DATA.cands.flatMap(c=>c.reasons))];
+  const box = $('#filters'); box.innerHTML='';
+  const mk = (label, key, val, color) => {
+    const d = document.createElement('div');
+    d.className='chip'; d.textContent=label; d.dataset.key=key; d.dataset.val=val||'';
+    d.onclick = () => {
+      if (key==='kind'){ filters.kind = (filters.kind===val)?null:val; }
+      else { filters[key] = !filters[key]; }
+      buildFilters(); renderList();
+    };
+    if ((key==='kind' && filters.kind===val) || (key!=='kind' && filters[key])) d.classList.add('on');
+    if (color) d.style.color = color;
+    box.appendChild(d);
+  };
+  mk('两轮一致','stable',null,'#8ec7ff');
+  mk('有结论','problems',null,'#ffb4b4');
+  kinds.forEach(k=>mk(k,'kind',k));
+}
+
+function renderList(){
+  const q = $('#search').value.trim().toLowerCase();
+  const list = $('#list'); list.innerHTML='';
+  let shown = 0;
+  DATA.cands.forEach((c,i) => {
+    if (filters.stable && !c.stable.length) return;
+    if (filters.problems && !probCount(c)) return;
+    if (filters.kind && !c.reasons.includes(filters.kind)) return;
+    if (q && !(c.cid.toLowerCase().includes(q) || String(c.roads.join(',')).includes(q)
+             || String(c.kind).toLowerCase().includes(q))) return;
+    shown++;
+    const n = probCount(c);
+    const d = document.createElement('div');
+    d.className = 'item' + (i===cur?' on':'');
+    d.innerHTML = `
+      <img src="data:image/jpeg;base64,${c.thumb}">
+      <div class="info">
+        <div class="cid">${c.cid}${n?`<span class="dot" style="display:inline-block;vertical-align:middle;margin-left:5px;background:${n>2?'#ff4d4d':'#ff9f2e'}"></span>`:''}</div>
+        <div class="kind">${c.kind} · ${c.n_hi} 条线</div>
+        <div class="badges">
+          <span class="b ${c.severity==='high'?'high':c.severity==='medium'?'med':c.severity==='none'?'none':''}">${c.severity||'-'}</span>
+          ${n?`<span class="b">${n} 问题</span>`:''}
+          ${c.stable.length?`<span class="b stable">✓ 两轮 ×${c.stable.length}</span>`:''}
+        </div>
+      </div>`;
+    d.onclick = ()=>go(i);
+    list.appendChild(d);
+  });
+  if (!shown) list.innerHTML = '<div class="empty">没有匹配的候选</div>';
+  $('#counts').textContent = `${shown} / ${DATA.cands.length} 处候选`;
+}
+
+/* ---------------- 画布 ---------------- */
+function applyTf(){
+  $('#world').style.transform = `translate(${tf.x}px,${tf.y}px) scale(${tf.k})`;
+  $('#zoomhud').textContent = `${(tf.k*100).toFixed(0)}%`;
+}
+function fit(){
+  const r = $('#stage').getBoundingClientRect();
+  const k = Math.min(r.width/S, r.height/S) * 0.97;
+  tf = {k, x:(r.width - S*k)/2, y:(r.height - S*k)/2};
+  applyTf();
+}
+function oneToOne(){
+  const r = $('#stage').getBoundingClientRect();
+  tf = {k:1, x:(r.width-S)/2, y:(r.height-S)/2}; applyTf();
+}
+function zoomAt(cx, cy, factor){
+  const k2 = Math.max(0.12, Math.min(9, tf.k*factor));
+  tf.x = cx - (cx - tf.x) * (k2/tf.k);
+  tf.y = cy - (cy - tf.y) * (k2/tf.k);
+  tf.k = k2; applyTf();
+}
+
+/* 缩放/拖拽 */
+$('#stage').addEventListener('wheel', e=>{
+  e.preventDefault();
+  const r = $('#stage').getBoundingClientRect();
+  zoomAt(e.clientX-r.left, e.clientY-r.top, e.deltaY<0 ? 1.14 : 1/1.14);
+}, {passive:false});
+let drag = null;
+$('#stage').addEventListener('mousedown', e=>{
+  if (e.button!==0) return;
+  drag = {x:e.clientX-tf.x, y:e.clientY-tf.y};
+  $('#stage').classList.add('drag');
+});
+window.addEventListener('mousemove', e=>{
+  if (!drag) return;
+  tf.x = e.clientX-drag.x; tf.y = e.clientY-drag.y; applyTf();
+});
+window.addEventListener('mouseup', ()=>{ drag=null; $('#stage').classList.remove('drag'); });
+$('#stage').addEventListener('dblclick', e=>{
+  const r = $('#stage').getBoundingClientRect();
+  zoomAt(e.clientX-r.left, e.clientY-r.top, e.shiftKey?0.5:2);
+});
+
+/* ---------------- 渲染一个候选 ---------------- */
+/* 标签避让：密集处几十条并排车道，编号会糊成一团。
+   做法：以锚点为起点，在若干候选偏移里挑第一个不与已放标签重叠的位置，
+   都冲突就沿径向往外推，直到找到空位（最多试 24 次，还不行就放弃这个标签）。 */
+let LABEL_BOXES = [];
+const LBL_H = 19;                  // 估算文字外框高（2048 坐标系）
+
+function _free(box){
+  return !LABEL_BOXES.some(b => !(box[2]<b[0] || box[0]>b[2] || box[3]<b[1] || box[1]>b[3]));
+}
+
+/* 通用避让：给定文字和一个锚点，找一个不与已有标签冲突的位置。
+   返回 [x, y]（文字基线起点）或 null（挤不下就不画）。 */
+function placeLabel(text, anchor, prefer){
+  const w = 10 + text.length * 9.5;
+  const cands = [];
+  const dirs = prefer || [[12,-12],[-12,-12],[12,10],[-12,10],
+                          [16,0],[-16,0],[0,-18],[0,16]];
+  for (const [dx,dy] of dirs) cands.push([anchor[0]+dx, anchor[1]+dy]);
+  // 再沿径向往外推，直到挤出空位
+  for (let r=40; r<=200; r+=26){
+    for (let i=0;i<6;i++){
+      const a = i*Math.PI/3;
+      cands.push([anchor[0]+Math.cos(a)*r, anchor[1]+Math.sin(a)*r]);
+    }
+  }
+  for (const [x,y] of cands){
+    const box = [x-4, y-LBL_H+4, x+w, y+5];
+    if (_free(box)){ LABEL_BOXES.push(box); return [x, y]; }
+  }
+  return null;
+}
+
+function midOf(pts){
+  let L=0; const segs=[];
+  for (let i=1;i<pts.length;i++){
+    const d=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]);
+    segs.push(d); L+=d;
+  }
+  let acc=0;
+  for (let i=0;i<segs.length;i++){
+    if (acc+segs[i] >= L/2){
+      const t=(L/2-acc)/segs[i];
+      return [pts[i][0]+(pts[i+1][0]-pts[i][0])*t, pts[i][1]+(pts[i+1][1]-pts[i][1])*t];
+    }
+    acc+=segs[i];
+  }
+  return pts[0];
+}
+
+function draw(){
+  const c = DATA.cands[cur];
+  const svg = $('#overlay');
+  svg.innerHTML='';
+  LABEL_BOXES = [];        // 每次重绘重置避让记录
+  const showHi = $('#c-hi').checked, showCtx = $('#c-ctx').checked && !$('#c-solo').checked;
+  const showLbl = $('#c-lbl').checked, showEnd = $('#c-end').checked;
+  const showCand = $('#c-cand').checked, showVer = $('#c-ver').checked;
+  const showStable = $('#c-stable').checked;
+  const showRaw = $('#c-raw').checked;
+  const vecMode = $('#c-vec').checked;
+
+  // 结论圈旁的编号标签先"占位"，车道编号再去避让它们，
+  // 并且同一条 lane 不再重复标一次（否则密集处会出现两个 L280 叠在一起）
+  const verLanes = new Set();
+  if (showVer){
+    c.verdicts.forEach(v=>{
+      if (!v.problem || ['ok','unreadable'].includes(v.problem)) return;
+      const at = v.anchor || v.xy; if (!at) return;
+      if (v.k != null) verLanes.add(v.k);
+      const w = 10 + String(v.lane).length * 9.5;
+      LABEL_BOXES.push([at[0]+19, at[1]-32, at[0]+19+w, at[1]-10]);
+    });
+  }
+
+  $('#world').style.background = vecMode ? '#0a0c10' : 'transparent';
+  if (vecMode !== $('#base').dataset.vec){
+    $('#base').dataset.vec = vecMode;
+    $('#base').style.opacity = vecMode ? 0 : ($('#opa').value/100);
+  }
+
+  const gCtx = el('g'), gHi = el('g'), gEnd = el('g'), gLbl = el('g'),
+        gVer = el('g'), gCand = el('g'), gHov = el('g');
+  svg.append(gCtx, gHi, gEnd, gLbl, gVer, gCand, gHov);
+
+  // --- 周边 Lane
+  if (showCtx){
+    c.lanes.filter(L=>!L.hi).forEach(L=>{
+      const p = el('path', {d:'M'+L.pts.map(q=>q[0]+' '+q[1]).join('L'),
+        class:'lane', stroke:'#7a8496', 'stroke-width':2, opacity:.62});
+      p.appendChild(el('title', {}));
+      p.firstChild.textContent = `Lane ${L.id} / road ${L.road} / ${L.len_m} m`;
+      gCtx.appendChild(p);
+    });
+  }
+
+  // --- 高亮 Lane
+  const hiSet = new Set();
+  c.lanes.filter(L=>L.hi).forEach(L=>{
+    hiSet.add(L.k);
+    const on = focusVerdict && focusVerdict.lane === 'L'+L.k;
+    const dstr = 'M'+L.pts.map(q=>q[0]+' '+q[1]).join('L');
+    if (showHi){
+      const p = el('path', {d:dstr, class:'lane', stroke:'#ff3b3b',
+        'stroke-width': on?7:5, opacity: on?1:.95});
+      gHi.appendChild(p);
+      if (on){
+        const p2 = el('path', {d:dstr, class:'lane',
+          stroke:'#6fa8ff', 'stroke-width':16, opacity:.5});
+        gHi.insertBefore(p2, p);
+      }
+    }
+    if (showEnd){
+      [L.pts[0], L.pts[L.pts.length-1]].forEach(q=>{
+        gEnd.appendChild(el('rect', {x:q[0]-7, y:q[1]-7, width:14, height:14,
+          fill:'#0d1016', stroke:'#ffffff', 'stroke-width':2.5, rx:2}));
+      });
+    }
+    if (showLbl && !verLanes.has(L.k)){
+      const m = midOf(L.pts);
+      const outer = on ? '#9ec8ff' : '#ffd54a';
+      const pos = placeLabel('L'+L.k, m);      // 避让后的位置
+      if (pos){
+        const t = el('text', {x:pos[0], y:pos[1], fill:outer, stroke:'#05070b',
+          'stroke-width':4, 'paint-order':'stroke', 'stroke-linejoin':'round'});
+        t.textContent = 'L'+L.k;
+        gLbl.appendChild(t);
+      }
+    }
+  });
+
+  // --- 候选点
+  if (showCand){
+    const [cx,cy] = c.cand_xy;
+    gCand.appendChild(el('circle',{cx,cy,r:22,fill:'none',stroke:'#ffd54a','stroke-width':2.5,opacity:.9}));
+    gCand.appendChild(el('circle',{cx,cy,r:3.5,fill:'#ffd54a'}));
+    gCand.appendChild(el('line',{x1:cx-38,y1:cy,x2:cx-24,y2:cy,stroke:'#ffd54a','stroke-width':2.5}));
+    gCand.appendChild(el('line',{x1:cx+24,y1:cy,x2:cx+38,y2:cy,stroke:'#ffd54a','stroke-width':2.5}));
+    gCand.appendChild(el('line',{x1:cx,y1:cy-38,x2:cx,y2:cy-24,stroke:'#ffd54a','stroke-width':2.5}));
+    gCand.appendChild(el('line',{x1:cx,y1:cy+24,x2:cx,y2:cy+38,stroke:'#ffd54a','stroke-width':2.5}));
+  }
+
+  // --- 模型结论圈：画在"锚定到车道"的位置；虚线指回模型写的原始点
+  if (showVer){
+    c.verdicts.forEach(v=>{
+      if (!v.problem || v.problem==='ok' || v.problem==='unreadable') return;
+      const at = v.anchor || v.xy;
+      if (!at) return;
+      const col = COL[v.problem] || '#fff';
+      const on = focusVerdict === v;
+      const [x,y] = at;
+      const g = el('g', {style:'pointer-events:all;cursor:pointer'});
+
+      // 锚点偏离较大时，画虚线到模型原始位置（淡）
+      if (v.xy && v.dev_m!=null && v.dev_m > 2 && showRaw){
+        const [rx,ry] = v.xy;
+        g.appendChild(el('line',{x1:x,y1:y,x2:rx,y2:ry,stroke:col,'stroke-width':1.4,
+          'stroke-dasharray':'5 5',opacity:.45}));
+        g.appendChild(el('circle',{cx:rx,cy:ry,r:4,fill:'none',stroke:col,
+          'stroke-width':1.4,opacity:.5}));
+      }
+      if (on){
+        g.appendChild(el('circle',{cx:x,cy:y,r:26,fill:'none',stroke:col,'stroke-width':8,opacity:.28}));
+      }
+      g.appendChild(el('circle',{cx:x,cy:y,r:on?17:14,fill:'none',stroke:col,
+        'stroke-width':on?3.5:2.6, opacity:.95}));
+      g.appendChild(el('line',{x1:x-22,y1:y,x2:x+22,y2:y,stroke:col,'stroke-width':1.6,opacity:.8}));
+      g.appendChild(el('line',{x1:x,y1:y-22,x2:x,y2:y+22,stroke:col,'stroke-width':1.6,opacity:.8}));
+      const lab = placeLabel(String(v.lane), [x+8, y-8],
+                             [[13,-11],[-13,-11],[13,9],[-13,9],[0,-20],[0,18]]);
+      if (lab){
+        const t = el('text',{x:lab[0], y:lab[1], fill:col, stroke:'#05070b',
+          'stroke-width':3.5, 'paint-order':'stroke','stroke-linejoin':'round'});
+        t.textContent = v.lane;
+        g.appendChild(t);
+      }
+      gVer.appendChild(g);
+      g.onclick = (e)=>{ e.stopPropagation(); focusV(v); };
+    });
+  }
+
+  // --- 两轮一致：在该 lane 上打蓝色小点
+  if (showStable && c.stable.length){
+    c.stable.forEach(sk=>{
+      const [lane] = sk.split('|');
+      const k = parseInt(lane.replace('L',''),10);
+      const L = c.lanes.find(x=>x.k===k);
+      if (!L) return;
+      L.pts.forEach((q,i)=>{
+        if (i%3) return;
+        gHi.appendChild(el('circle',{cx:q[0],cy:q[1],r:3.2,fill:'#3d9bff',
+          stroke:'#05070b','stroke-width':1}));
+      });
+    });
+  }
+
+  // 底图 & 标题
+  $('#base').src = `img/${c.cid}.jpg`;
+  $('#ttl').textContent = c.cid;
+  $('#ttag').textContent = `${c.kind} · ${c.n_hi} 条线 · ${c.ground_m} m · 旋转 ${c.rotation_deg}°`;
+
+  renderVerdicts(c);
+}
+
+/* ---------------- 右栏 ---------------- */
+function renderVerdicts(c){
+  const pane = $('#verd'); pane.innerHTML='';
+  const n = probCount(c);
+  $('#sum').innerHTML = `<b>${c.cid}</b> <span style="color:#8b93a6">${c.kind}</span><br>
+    <span style="color:#8b93a6">${c.note||''}</span><br>
+    <span style="color:#ffd54a">${c.overall||''}</span>`;
+
+  if (!c.verdicts.length){ pane.innerHTML='<div class="empty">这次没有返回结论</div>'; return; }
+
+  // 有问题的排前面
+  const order = [...c.verdicts].sort((a,b)=>{
+    const pa = (a.problem==='ok'||a.problem==='unreadable')?1:0;
+    const pb = (b.problem==='ok'||b.problem==='unreadable')?1:0;
+    return pa-pb || (b.confidence||0)-(a.confidence||0);
+  });
+
+  order.forEach(v=>{
+    const bad = v.problem && !['ok','unreadable'].includes(v.problem);
+    const col = COL[v.problem] || '#8b93a6';
+    const stableKey = `${v.lane}|${v.problem}`;
+    const isStable = c.stable.includes(stableKey);
+    const key = c.cid + '|' + v.lane + '|' + v.problem;
+    const got = MARKS[key];
+    const d = document.createElement('div');
+    d.className='vrow' + (got?' verified':'');
+    d.innerHTML = `
+      <div style="width:3px;border-radius:2px;background:${col};flex:none"></div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;gap:7px;align-items:baseline">
+          <span class="vk">${v.lane}</span>
+          <span class="vp" style="color:${col}">${ZH[v.problem]||v.problem}</span>
+          ${isStable?'<span class="b stable" style="font-size:9.5px">两轮一致</span>':''}
+          <span class="vc">${v.confidence!=null?(v.confidence*100).toFixed(0)+'%':''}</span>
+        </div>
+        ${bad?`<div class="vbody"><b>依据</b> ${v.evidence||''}<br><b>改法</b> ${v.fix||''}</div>`:''}
+        <div class="judge">
+          <button class="good${got==='right'?' on':''}" data-j="right">✓ 对</button>
+          <button class="bad${got==='wrong'?' on':''}" data-j="wrong">✗ 错</button>
+        </div>
+      </div>`;
+    d.onclick = (e)=>{
+      if (e.target.dataset.j) { mark(key, e.target.dataset.j); e.stopPropagation(); return; }
+      focusV(v, d);
+    };
+    if (bad) d.dataset.bad = '1';
+    pane.appendChild(d);
+  });
+
+  const total = c.verdicts.filter(v=>v.problem && !['ok','unreadable'].includes(v.problem)).length;
+  const done = c.verdicts.filter(v=>MARKS[c.cid+'|'+v.lane+'|'+v.problem]).length;
+  const tip = document.createElement('div');
+  tip.id='prog';
+  tip.innerHTML = `本处 ${done}/${total} 已核对 · 全局 ${Object.keys(MARKS).length} 条`;
+  pane.insertBefore(tip, pane.firstChild);
+  if (c.raw_text){
+    const det = document.createElement('details');
+    det.style.cssText='margin-top:10px;font-size:11px;color:#8b93a6';
+    det.innerHTML = `<summary style="cursor:pointer;padding:4px 0">模型原始输出</summary>
+      <pre style="white-space:pre-wrap;font-size:10.5px;line-height:1.5;color:#9aa4ba;
+      background:#12151b;padding:8px;border-radius:5px;max-height:340px;overflow:auto">${
+      (c.raw_text||'').replace(/[<>&]/g, ch=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[ch]))}</pre>`;
+    pane.appendChild(det);
+  }
+}
+
+/* ---------------- 人工核对标记 ----------------
+   注意：直接用 file:// 打开时部分浏览器会禁用 localStorage（甚至会抛异常），
+   所以这里必须有兜底，否则整个页面会在初始化时挂掉。 */
+const LS_KEY = 'lane-marks';
+let MARKS = {};
+try {
+  MARKS = JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {};
+} catch (e) {
+  console.warn('localStorage 不可用，核对标记只保存在内存里（关闭页面即丢失）');
+  MARKS = {};
+}
+function saveMarks(){
+  try { localStorage.setItem(LS_KEY, JSON.stringify(MARKS)); }
+  catch (e) { /* 内存模式：忽略 */ }
+}
+function mark(key, val){
+  if (MARKS[key] === val) delete MARKS[key]; else MARKS[key] = val;
+  saveMarks();
+  renderVerdicts(DATA.cands[cur]);
+}
+
+/* 导出标注集：/viewer/api/mark 由 webexport.py --serve 提供的接口
+   没有服务时退化为下载 JSON —— 两种方式都能拿到 results.json */
+async function exportMarks(){
+  const payload = {saved_at:new Date().toISOString(), marks:MARKS};
+  const rows = Object.entries(MARKS).map(([k,v])=>{
+    const [cid,lane,problem] = k.split('|');
+    return {cid, lane, problem, human: v==='right'?'confirmed':'rejected'};
+  });
+  payload.rows = rows;
+  try{
+    const r = await fetch('api/mark', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    if (r.ok){ alert(`已保存 ${rows.length} 条到 annotations.json`); return; }
+  }catch(e){}
+  const blob = new Blob([JSON.stringify(payload,null,1)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'annotations.json'; a.click();
+}
+
+/* 点击结论：高亮该 Lane + 缩放到该点 */
+function focusV(v, row){
+  const c = DATA.cands[cur];
+  const same = focusVerdict === v;
+  focusVerdict = same ? null : v;
+  document.querySelectorAll('.vrow').forEach(r=>r.classList.remove('on'));
+  if (row && !same) row.classList.add('on');
+  if (!same && v.xy){
+    const [x,y] = v.xy;
+    const r = $('#stage').getBoundingClientRect();
+    const k = Math.max(0.55, Math.min(2.2, tf.k));
+    tf.k = k;
+    tf.x = r.width/2 - x*k;
+    tf.y = r.height/2 - y*k;
+    applyTf();
+  }
+  draw();
+}
+
+/* ---------------- 导航 ---------------- */
+function go(i){
+  cur = Math.max(0, Math.min(DATA.cands.length-1, i));
+  focusVerdict = null;
+  renderList(); draw();
+  const on = $('#list .item.on');
+  if (on && on.scrollIntoView) on.scrollIntoView({block:'nearest'});
+}
+
+document.addEventListener('keydown', e=>{
+  if (e.target.tagName==='INPUT' || e.target.tagName==='TEXTAREA') return;
+  if (e.key==='ArrowLeft'||e.key==='a'){ go(cur-1); e.preventDefault(); }
+  if (e.key==='ArrowRight'||e.key==='d'){ go(cur+1); e.preventDefault(); }
+  if (e.key==='f'){ fit(); }
+  if (e.key==='1'){ oneToOne(); }
+  if (e.key==='0'){ fit(); }
+  const num = parseInt(e.key,10);
+  const boxes = ['c-hi','c-ctx','c-lbl','c-end','c-cand','c-ver','c-raw','c-stable','c-solo','c-vec'];
+  if (num>=1 && num<=9){ const b=$('#'+boxes[num-1]); b.checked=!b.checked; draw(); }
+});
+
+/* ---------------- 图层开关 ---------------- */
+['c-hi','c-ctx','c-lbl','c-end','c-cand','c-ver','c-raw','c-stable','c-solo','c-vec']
+  .forEach(id=>$('#'+id).addEventListener('change', draw));
+$('#opa').addEventListener('input', e=>{
+  const v = e.target.value/100;
+  $('#base').style.opacity = v;
+  $('#base').style.filter = v<1 ? `brightness(${0.55+v*0.45})` : 'none';
+});
+$('#fit').onclick = fit;
+$('#exp').onclick = exportMarks;
+$('#one').onclick = oneToOne;
+$('#prev').onclick = ()=>go(cur-1);
+$('#next').onclick = ()=>go(cur+1);
+$('#search').addEventListener('input', renderList);
+
+/* ---------------- 启动 ---------------- */
+buildFilters();
+renderList();
+go(0);
+fit();
+</script>
+</body>
+</html>

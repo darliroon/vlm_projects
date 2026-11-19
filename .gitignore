@@ -1,0 +1,18 @@
+# 凭据与本地环境
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# 实验产物：不进 git，统一放各项目的 ret/ 下，按版本分子目录
+# 代码回退用 git tag，产物回退用 ret/<版本>/
+vlm_direct_sat/ret/
+vlm_match_sat/ret/
+
+# 人工标注里可能含本地路径/大图
+*.log.tmp
+
+# 查看器导出产物（由 webexport.py 生成）
+vlm_match_sat/viewer/viewer_data.js
