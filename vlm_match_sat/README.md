@@ -21,9 +21,9 @@
 
 ```
 candidates.py  →  candidates.json      纯矢量拓扑，40 个可疑点
-render.py      →  crops/Cnnn/{sat,vec,meta}.png    卫星图+矢量 / 纯矢量图
-ask.py         →  works/<model>/s<size>/r<rep>/Cnnn.json   模型判断
-review.py      →  sheet_*.png（人眼核查台）+ proposals_*.json（可执行的修改建议）
+render.py      →  ret/<ver>/crops/Cnnn/{sat,vec,meta}.png   卫星图+矢量 / 纯矢量图
+ask.py         →  ret/<ver>/works/<model>/s<size>_<tag>/r<rep>/Cnnn.json   模型判断
+review.py      →  ret/<ver>/sheet_*.png（人眼核查台）+ proposals_*.json（可执行的修改建议）
 ```
 
 ### 1. 候选点生成（`candidates.py`）
@@ -43,7 +43,7 @@ review.py      →  sheet_*.png（人眼核查台）+ proposals_*.json（可执�
 按 `branch+seam > branch > seam > dangle` 排序。
 
 **cid 是几何稳定标识**（如 `C0009_0016`，取 50 m 网格坐标），不由排序决定。
-因为 `crops/` 和 `works/` 都按 cid 命名，cid 一旦漂移，图和结果就会错位——
+因为 `crops/` 和 `works/` 里的文件都按 cid 命名，cid 一旦漂移，图和结果就会错位——
 这个坑踩过一次（换判据后 12/40 的编号变了）。
 
 结果：40 个候选（branch 11、seam 10、dangle 38，可重叠）。

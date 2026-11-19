@@ -402,6 +402,8 @@ def report(models=None, size=None):
     import collections
     rows = []
     for root, _, files in os.walk(WORK):
+        if "_dryrun" in os.path.relpath(root, WORK).split(os.sep):
+            continue
         for f in files:
             if not f.endswith(".json"):
                 continue
