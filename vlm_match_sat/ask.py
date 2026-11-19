@@ -208,23 +208,68 @@ def pick_fewshot(cid, n, crops, annots=None):
     return chosen, annots
 
 
+def _local_pts(a, meta, size):
+    """把一条标注的所有点换算到本图幅的像素坐标。
+    返回 [(x, y), ...] 只含落在图幅内的点，顺序保持；同时返回每点对应的车道描述。"""
+    raw = a.get("pts") or [{"x": a.get("x"), "y": a.get("y")}]
+    gpts = a.get("xy_global_pts")
+    if not (gpts and len(gpts) == len(raw)):
+        gpts = [a.get("xy_global")] + [None] * (len(raw) - 1) if a.get("xy_global") else [None] * len(raw)
+    out = []
+    for q, gp in zip(raw, gpts):
+        if not gp:
+            continue
+        p = to_local(gp, meta, size)
+        if not (0 <= p[0] <= size and 0 <= p[1] <= size):
+            continue
+        ref = None
+        k = q.get("lane")
+        if k is not None:
+            if any(L["k"] == k for L in meta["lanes"]):
+                i = q.get("idx")
+                ref = f"L{k}" if i is None else f"L{k} 第 {int(i) + 1} 点"
+            else:
+                ref = f"L{k}（不在本图幅）"
+        out.append(((int(round(p[0])), int(round(p[1]))), ref))
+    return out
+
+
 def fewshot_rows(ex_cid, annots, crops, size):
-    """一处判例的人工结论文字；落在这张图幅之外的标注用不上，跳过。"""
+    """一处判例的人工结论文字；落在图幅之外的标注（或点）用不上，跳过。"""
     meta = json.load(open(os.path.join(crops, ex_cid, "meta.json")))
     rows = []
     for a in sorted(annots[ex_cid], key=lambda a: a.get("seq", 0)):
-        p = to_local(a["xy_global"], meta, size)
-        if not (0 <= p[0] <= size and 0 <= p[1] <= size):
+        pts = _local_pts(a, meta, size)
+        if not pts:
             continue
-        lane = _nearest_lane(p, meta, size)
-        r = (f"- 位置 ({int(round(p[0]))},{int(round(p[1]))})，"
-             f"{'最近的红线 ' + lane if lane else '不在任何红线上'}："
-             f"{a['type']}（{ZH.get(a['type'], a['type'])}）。")
+        # 人工标注的 type 可以是内置值，也可以是标注者自己输入的类型名（类型尚未固化）。
+        # 后者没有中文对照，直接原文输出，不加重复的括号。
+        lab = ZH.get(a["type"])
+        tname = a["type"] + "（" + lab + "）" if lab and lab != a["type"] else a["type"]
+        # 一条标注 = 一个问题（锚点 + 类型 + 整体说明），下面挂 N 条几何操作 ops。
+        # 旧格式没有 ops：单独的 link/del 行本身就是唯一的操作。
+        kind = a.get("kind") or "point"
+        ops = a.get("ops") or ([a] if kind in ("link", "del") else [])
+        (x, y) = pts[0][0]
+        lane = _nearest_lane(np.array([x, y], float), meta, size)
+        r = (f"- 问题位置 ({x},{y})，"
+             f"{'最近的红线 ' + lane if lane else '不在任何红线上'}：{tname}。")
         if a.get("fix"):
             r += f"改法：{a['fix'].strip()}"
         if a.get("note"):
             r += f"（说明：{a['note'].strip()}）"
         rows.append(r)
+        for i, o in enumerate(ops, 1):
+            if o.get("kind") == "del":
+                if any(L["k"] == o.get("lane") for L in meta["lanes"]):   # 不在本图幅的线模型看不到
+                    rows.append(f"  {i}. 删除红线 L{o.get('lane')}。")
+                continue
+            opts = _local_pts(o, meta, size)
+            if len(opts) < 2:
+                continue        # 连线大半落在图幅外，模型看不到，不写
+            # 连线是标注者亲手画出来的"正确走线"，逐点写出来，模型可以照着看形状
+            chain = " → ".join(f"({px},{py})" + (f"[{ref}]" if ref else "") for (px, py), ref in opts)
+            rows.append(f"  {i}. 连线：{chain}。")
     return rows
 
 

@@ -206,7 +206,11 @@ let cur = 0;
 let tf = {x:0, y:0, k:1};
 let focusVerdict = null;
 /* cur / tf 是 let 声明，不会挂到 window 上；标注模块（annotate.js）通过这个对象读取 */
-window.VIEW = { get cur(){ return cur; }, get tf(){ return tf; } };
+window.VIEW = { get cur(){ return cur; }, get tf(){ return tf; },
+  /* 标注模块用：把某个底图坐标移到视野中央（k 不够大就拉到可读的倍率） */
+  center(x, y, minK){ const r = $('#stage').getBoundingClientRect();
+    const k = Math.max(minK || 0.55, Math.min(2.2, tf.k)); tf.k = k;
+    tf.x = r.width/2 - x*k; tf.y = r.height/2 - y*k; applyTf(); } };
 const filters = {stable:false, problems:false, kind:null};
 
 /* ---------------- 左栏 ---------------- */
@@ -268,6 +272,8 @@ function renderList(){
 function applyTf(){
   $('#world').style.transform = `translate(${tf.x}px,${tf.y}px) scale(${tf.k})`;
   $('#zoomhud').textContent = `${(tf.k*100).toFixed(0)}%`;
+  // 缩放/平移后通知标注模块：顶点圆点要按屏幕像素保持大小，得跟着重画
+  window.dispatchEvent(new Event('view:tf'));
 }
 function fit(){
   const r = $('#stage').getBoundingClientRect();
@@ -304,6 +310,7 @@ window.addEventListener('mousemove', e=>{
 });
 window.addEventListener('mouseup', ()=>{ drag=null; $('#stage').classList.remove('drag'); });
 $('#stage').addEventListener('dblclick', e=>{
+  if (window.ANNOT_MODE) return;      // 标注模式下双击不缩放，免得连点连线时误触
   const r = $('#stage').getBoundingClientRect();
   zoomAt(e.clientX-r.left, e.clientY-r.top, e.shiftKey?0.5:2);
 });
@@ -364,7 +371,9 @@ function draw(){
   svg.innerHTML='';
   LABEL_BOXES = [];        // 每次重绘重置避让记录
   const showHi = $('#c-hi').checked, showCtx = $('#c-ctx').checked && !$('#c-solo').checked;
-  const showLbl = $('#c-lbl').checked, showEnd = $('#c-end').checked;
+  const showLbl = $('#c-lbl').checked;
+  // 标注模式下由标注模块画全量顶点，避免和这里的端点方块叠在一起
+  const showEnd = $('#c-end').checked && !window.ANNOT_MODE;
   const showCand = $('#c-cand').checked, showVer = $('#c-ver').checked;
   const showStable = $('#c-stable').checked;
   const showRaw = $('#c-raw').checked;

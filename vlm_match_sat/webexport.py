@@ -137,14 +137,31 @@ def match_lane(lane_key, L):
     return None
 
 
+def resolve_work(tag=None):
+    """找模型结论目录。
+
+    ask.py 的约定是 works/<model>/s<size>[_<tag>]/，但 v1 的结果实际落在
+    works/s1110_v1/（少了 <model> 这一层），所以两种布局都找。
+    不给 tag 时：先找不带 tag 的基线（v0 的 s1024），找不到再用 _<版本名> 结尾的目录（v1 → s1110_v1）。
+    """
+    import glob
+    def find(pat):
+        hits = glob.glob(paths.p("works", MODEL, pat)) + glob.glob(paths.p("works", pat))
+        return sorted(h for h in hits if os.path.isdir(h) and "_dryrun" not in h)
+    if tag:
+        hits = find(f"s*_{tag}")
+    else:
+        hits = [h for h in find("s*") if "_" not in os.path.basename(h)] or find(f"s*_{paths.VER}")
+    if len(hits) != 1:
+        sys.exit(f"ret/{paths.VER}/works/ 下{'找不到' if not hits else '有多个'}模型结论目录"
+                 f"{('：' + ', '.join(map(paths.rel, hits))) if hits else ''}；请用 --tag 指定")
+    return hits[0]
+
+
 def build(tag=None):
     global WORK
-    if tag:
-        import glob
-        hits = sorted(glob.glob(paths.p("works", MODEL, f"s*_{tag}")))
-        if not hits:
-            sys.exit(f"找不到 ret/{paths.VER}/works/{MODEL}/s*_{tag}")
-        WORK = hits[0]
+    WORK = resolve_work(tag)
+    print(f"模型结论：{paths.rel(WORK)}", flush=True)
     os.makedirs(IMG, exist_ok=True)
     # 查看器的 HTML/JS 源码在根目录（进 git），复制到产物目录供服务直接托管
     for fn in ("index.html", "annotate.js"):
@@ -254,6 +271,9 @@ def build(tag=None):
         ))
         print(f"{cid} lanes={len(L)} verdicts={len(verd)}", flush=True)
 
+    # 一条结论都没读到，多半是结果目录找错了。宁可报错也别写出一份空数据把查看器覆盖掉
+    if not any(c["verdicts"] or c["overall"] for c in cands):
+        sys.exit(f"{paths.rel(WORK)} 里没有读到任何模型结论，未写 viewer_data.js")
     payload = dict(model=MODEL, size=SIZE, count=len(cands), cands=cands)
     js = "window.DATA=" + json.dumps(payload, ensure_ascii=False,
                                      separators=(",", ":")) + ";"
@@ -389,7 +409,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--serve", action="store_true", help="启动本地服务（带标注保存接口）")
     ap.add_argument("--port", type=int, default=8770)
-    ap.add_argument("--tag", help="展示哪一版的模型结论：ret/<ver>/works/<model>/s1024_<tag>/ ；不给就是该版基线")
+    ap.add_argument("--tag", help="展示哪一版的模型结论：ret/<ver>/works/[<model>/]s<size>_<tag>/ ；不给就自动找该版唯一的结论目录")
     ap.add_argument("--ver", help="产物版本目录 ret/<ver>/，默认 v1（也可设环境变量 VLM_RET_VERSION）")
     ap.add_argument("--host", default="0.0.0.0",
                     help="监听地址；远程访问用默认 0.0.0.0，只允许本机用 127.0.0.1")
