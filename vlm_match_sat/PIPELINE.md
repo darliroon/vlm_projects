@@ -424,7 +424,7 @@ dev_m = dev_px * 0.13514
 ## 8. 完整命令
 
 ```bash
-cd /home/liufeng/projects/vlm_projects/vlm_match_sat
+cd /data/liufeng/projects/vlm_projects/vlm_match_sat
 
 python candidates.py                       # A: 矢量拓扑 → 40 个候选
 python render.py                           # B: 渲染 sat.png + vec.png

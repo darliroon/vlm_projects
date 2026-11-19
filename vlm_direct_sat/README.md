@@ -39,7 +39,7 @@ ret/gt/   人工标注参考图、得分图、misses/overlay 检查图
 ## 运行
 
 ```bash
-cd /home/liufeng/projects/vlm_projects/vlm_direct_sat
+cd /data/liufeng/projects/vlm_projects/vlm_direct_sat
 
 python ms3.py                 # 跑 v3（tight + grid，2 模型 × 2 轮 × 5 张）
 python score.py               # 打分
