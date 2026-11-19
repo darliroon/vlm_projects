@@ -133,7 +133,7 @@ review.py      →  ret/<ver>/sheet_*.png（人眼核查台）+ proposals_*.json
 ## 怎么跑
 
 ```bash
-cd /home/liufeng/data/projects/vlm_projects/vlm_match_sat
+cd /home/liufeng/projects/vlm_projects/vlm_match_sat
 python candidates.py                       # 生成候选
 python render.py                            # 渲染 crop
 python ask.py run --model claude-fable-5-2 --size 1024 --workers 3

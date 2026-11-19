@@ -36,7 +36,7 @@ ret/
 ## 用法
 
 ```bash
-cd /home/liufeng/data/projects/vlm_projects/vlm_match_sat
+cd /home/liufeng/projects/vlm_projects/vlm_match_sat
 
 # 新增一版：v2
 python render.py --meters 150 --no-rotate --ver v2 --out crops     # 产物落 ret/v2/crops
