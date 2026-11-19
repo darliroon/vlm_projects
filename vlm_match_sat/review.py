@@ -51,14 +51,19 @@ def load_results(model, size, rep=1, size_dir=None):
     return out
 
 
+def _sd(size, tag=None):
+    """结果目录名，与 ask.py 的 run_dir 一致：s1024（v0）或 s1024_<tag>"""
+    return f"s{size}" + (f"_{tag}" if tag else "")
+
+
 COLORS = {"ok": (60, 200, 90), "missing_lane": (255, 60, 60),
           "wrong_break": (255, 160, 40), "wrong_branch": (200, 60, 255),
           "wrong_count": (60, 160, 255), "unreadable": (140, 140, 140)}
 
 
-def sheet(model, size, rep=1, cols=4, cell=520):
+def sheet(model, size, rep=1, cols=4, cell=520, tag=None):
     C = json.load(open(os.path.join(HERE, "candidates.json")))["cands"]
-    R = load_results(model, size, rep)
+    R = load_results(model, size, rep, size_dir=_sd(size, tag))
     rows = (len(C) + cols - 1) // cols
     pad, hdr = 8, 92
     Wt, Ht = cols * (cell + pad) + pad, rows * (cell + hdr + pad) + pad
@@ -116,7 +121,7 @@ def sheet(model, size, rep=1, cols=4, cell=520):
             lines[-1] = lines[-1][:-1] + "…"
         for k, ln in enumerate(lines):
             dr.text((x + 4, y + cell + 50 + k * 18), ln, font=f3, fill=(190, 190, 190))
-    out = paths.p(f"sheet_{model}_s{size}_r{rep}.png")
+    out = paths.p(f"sheet_{model}_{_sd(size, tag)}_r{rep}.png")
     sheet_im.save(out)
     print("wrote", out, sheet_im.size)
 
@@ -125,10 +130,10 @@ ACTION = {"missing_lane": "extend", "wrong_break": "trim_or_relink",
           "wrong_branch": "relink", "wrong_count": "recount"}
 
 
-def apply(model, size, rep=1, min_conf=0.5):
+def apply(model, size, rep=1, min_conf=0.5, tag=None):
     """把 verdict 变成 lane 级建议（不改数据，只出 proposals）"""
     C = {c["cid"]: c for c in json.load(open(os.path.join(HERE, "candidates.json")))["cands"]}
-    R = load_results(model, size, rep)
+    R = load_results(model, size, rep, size_dir=_sd(size, tag))
     props = []
     for cid, res in sorted(R.items()):
         p = res.get("parsed") or {}
@@ -148,7 +153,7 @@ def apply(model, size, rep=1, min_conf=0.5):
                 where_local=v.get("where"), evidence=v.get("evidence"), fix=v.get("fix"),
                 severity=p.get("severity"),
             ))
-    out = paths.p(f"proposals_{model}_s{size}_r{rep}.json")
+    out = paths.p(f"proposals_{model}_{_sd(size, tag)}_r{rep}.json")
     json.dump(props, open(out, "w"), ensure_ascii=False, indent=1)
     print("wrote", out, len(props))
     # 按 action 统计
@@ -237,13 +242,18 @@ if __name__ == "__main__":
     ap.add_argument("--size", type=int, default=1024)
     ap.add_argument("--rep", type=int, default=1)
     ap.add_argument("--min-conf", type=float, default=0.5)
-    ap.add_argument("--ver", help="产物版本目录 ret/<ver>/，默认 v0")
+    ap.add_argument("--tag", help="读哪一版的结果：works/<model>/s<size>_<tag>/ ；不给就是 v0")
+    ap.add_argument("--crops", help="对应的裁剪图目录（相对 ret/<ver>/），默认 crops")
+    ap.add_argument("--ver", help="产物版本目录 ret/<ver>/，默认 v1（也可设环境变量 VLM_RET_VERSION）")
     a = ap.parse_args()
     if a.ver:
         paths.use(a.ver)
+        CROPS, WORK = paths.p("crops"), paths.p("works")
+    if a.crops:
+        CROPS = paths.p(a.crops)
     if a.cmd == "sheet":
-        sheet(a.model, a.size, a.rep)
+        sheet(a.model, a.size, a.rep, tag=a.tag)
     elif a.cmd == "apply":
-        apply(a.model, a.size, a.rep, a.min_conf)
+        apply(a.model, a.size, a.rep, a.min_conf, tag=a.tag)
     else:
         stats()

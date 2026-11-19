@@ -1,7 +1,7 @@
 """所有实验产物（裁剪图 / 模型结论 / 查看器 / 报表）的落盘位置。
 
 代码在本目录用 git 管理，版本 = tag；产物不进 git，统一放 ret/<版本>/。
-用环境变量 VLM_RET_VERSION 指定用哪一版产物，默认与当前代码对应的版本。
+用环境变量 VLM_RET_VERSION 指定用哪一版产物，默认 v1（当前代码对应的版本）。
 
     ret/
       v0/  crops/ works/ viewer/ viewer_img/ *.png *.json  snapshot/
@@ -13,7 +13,7 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RET = os.path.join(HERE, "ret")
-VER = os.environ.get("VLM_RET_VERSION", "v0")
+VER = os.environ.get("VLM_RET_VERSION", "v1")
 
 
 def p(*parts):

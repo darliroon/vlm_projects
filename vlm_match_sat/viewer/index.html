@@ -160,6 +160,8 @@
         <span class="sw sq" style="border-color:#fff;background:transparent"></span>端点</label>
       <label class="lrow"><input type="checkbox" id="c-cand" checked>
         <span class="sw sq" style="border-color:#ffd54a;background:transparent"></span>候选点</label>
+      <label class="lrow"><input type="checkbox" id="c-fov" checked>
+        <span class="sw sq" style="border-color:#5ad1e6;border-style:dashed;background:transparent"></span>模型视野（框外模型看不到）</label>
       <label class="lrow"><input type="checkbox" id="c-ver" checked>
         <span class="sw sq" style="border-color:#c14dff;background:transparent"></span>模型结论圈</label>
       <label class="lrow"><input type="checkbox" id="c-raw">
@@ -203,6 +205,8 @@ const el = (t, a={}) => { const e = document.createElementNS(
 let cur = 0;
 let tf = {x:0, y:0, k:1};
 let focusVerdict = null;
+/* cur / tf 是 let 声明，不会挂到 window 上；标注模块（annotate.js）通过这个对象读取 */
+window.VIEW = { get cur(){ return cur; }, get tf(){ return tf; } };
 const filters = {stable:false, problems:false, kind:null};
 
 /* ---------------- 左栏 ---------------- */
@@ -386,8 +390,25 @@ function draw(){
   }
 
   const gCtx = el('g'), gHi = el('g'), gEnd = el('g'), gLbl = el('g'),
-        gVer = el('g'), gCand = el('g'), gHov = el('g');
-  svg.append(gCtx, gHi, gEnd, gLbl, gVer, gCand, gHov);
+        gVer = el('g'), gCand = el('g'), gHov = el('g'), gFov = el('g');
+  svg.append(gFov, gCtx, gHi, gEnd, gLbl, gVer, gCand, gHov);
+
+  // --- 模型视野：底图是 2048 px ≈ 277 m，模型出这批结论时只看到了框内这一块
+  if ($('#c-fov').checked && c.model_fov){
+    const q = c.model_fov;
+    gFov.appendChild(el('polygon', {points:q.map(p=>p.join(',')).join(' '), fill:'none',
+      stroke:'#5ad1e6', 'stroke-width':2, 'stroke-dasharray':'12 7', opacity:.9,
+      'vector-effect':'non-scaling-stroke'}));
+    // 框外压暗一点，一眼能看出哪里在视野外
+    gFov.appendChild(el('path', {d:`M0 0H${S}V${S}H0Z M`+q.map(p=>p.join(' ')).join('L')+'Z',
+      'fill-rule':'evenodd', fill:'#000', opacity:.28}));
+    const top = q.reduce((a,b)=> (b[1]<a[1] || (b[1]===a[1] && b[0]<a[0])) ? b : a);
+    const t = el('text', {x:top[0]+8, y:top[1]-20, fill:'#5ad1e6', stroke:'#05070b',
+      'stroke-width':5, 'paint-order':'stroke', 'stroke-linejoin':'round',
+      style:'font-size:30px'});
+    t.textContent = `模型视野 ${c.model_fov_m} m`;
+    gFov.appendChild(t);
+  }
 
   // --- 周边 Lane
   if (showCtx){
@@ -651,12 +672,12 @@ document.addEventListener('keydown', e=>{
   if (e.key==='1'){ oneToOne(); }
   if (e.key==='0'){ fit(); }
   const num = parseInt(e.key,10);
-  const boxes = ['c-hi','c-ctx','c-lbl','c-end','c-cand','c-ver','c-raw','c-stable','c-solo','c-vec'];
+  const boxes = ['c-hi','c-ctx','c-lbl','c-end','c-cand','c-ver','c-raw','c-stable','c-solo','c-vec','c-fov'];
   if (num>=1 && num<=9){ const b=$('#'+boxes[num-1]); b.checked=!b.checked; draw(); }
 });
 
 /* ---------------- 图层开关 ---------------- */
-['c-hi','c-ctx','c-lbl','c-end','c-cand','c-ver','c-raw','c-stable','c-solo','c-vec']
+['c-hi','c-ctx','c-lbl','c-end','c-cand','c-ver','c-raw','c-stable','c-solo','c-vec','c-fov']
   .forEach(id=>$('#'+id).addEventListener('change', draw));
 $('#opa').addEventListener('input', e=>{
   const v = e.target.value/100;
@@ -676,5 +697,6 @@ renderList();
 go(0);
 fit();
 </script>
+<script src="annotate.js"></script>
 </body>
 </html>

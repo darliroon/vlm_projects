@@ -1,6 +1,6 @@
 # 全流程详解：用卫片核查已提取的车道中心线
 
-本文档逐环节说明 `merge_split2` 的完整管线，重点是**送给大模型的输入到底是什么**、
+本文档逐环节说明 `vlm_match_sat` 的完整管线，重点是**送给大模型的输入到底是什么**、
 **它必须吐回什么格式**，以及每一环为什么这样设计。
 
 ---
@@ -424,7 +424,7 @@ dev_m = dev_px * 0.13514
 ## 8. 完整命令
 
 ```bash
-cd /home/liufeng/data/lane-distill/merge_split2
+cd /home/liufeng/data/projects/vlm_projects/vlm_match_sat
 
 python candidates.py                       # A: 矢量拓扑 → 40 个候选
 python render.py                           # B: 渲染 sat.png + vec.png

@@ -5,8 +5,11 @@
  *   1. few-shot 示例 —— 直接喂进 prompt，让模型看到真实判例
  *   2. 真值（ground truth）—— 用来算 precision / recall
  *
- * 坐标：与查看器一致，2048 裁剪图像素坐标系。
- * 存储：localStorage（离线可用）+ POST api/annots（服务模式下落盘 annotations.json）
+ * 坐标：点击位置是查看器底图（2048 px）里的像素；保存时同时换算成整幅卫片的像素坐标
+ *       xy_global。后者才是真正用的：模型看到的图（1024 px、旋转角可能不同）与查看器
+ *       底图不是同一个坐标系，只有整幅卫片坐标对所有版本都成立。
+ * 存储：每次保存/删除都自动 POST api/annots，服务端写到 human_annots.json（不用手动导出）；
+ *       同时写 localStorage 作离线兜底。打开页面时以服务端文件为准。
  */
 (function () {
   'use strict';
@@ -27,6 +30,27 @@
   let editing = null;    // 正在编辑的标注 id
 
   const S = () => window.DATA.size;
+  const V = () => window.VIEW;                       // {cur, tf}，由 index.html 提供
+  const cand = () => window.DATA.cands[V().cur];
+
+  /* 查看器底图坐标 -> 整幅卫片像素坐标（render.py 里 rot() 的逆变换） */
+  function toGlobal(c, x, y) {
+    const a = -c.rotation_exact * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+    const u = x - S() / 2, v = y - S() / 2;
+    return [+(u * ca + v * sa + c.center_xy[0]).toFixed(2),
+            +(-u * sa + v * ca + c.center_xy[1]).toFixed(2)];
+  }
+  /* 这个点在不在模型当时看到的图幅里（图幅外的标注做不了 few-shot） */
+  function inFov(c, x, y) {
+    const q = c.annot_fov;
+    if (!q) return true;
+    let inside = false;
+    for (let i = 0, j = q.length - 1; i < q.length; j = i++) {
+      if ((q[i][1] > y) !== (q[j][1] > y) &&
+          x < (q[j][0] - q[i][0]) * (y - q[i][1]) / (q[j][1] - q[i][1]) + q[i][0]) inside = !inside;
+    }
+    return inside;
+  }
   const uid = () => 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   /* ---------------- 样式 ---------------- */
@@ -48,11 +72,14 @@
     padding:5px 7px;outline:none;font-family:inherit;resize:vertical;}
   #ann-form select:focus,#ann-form textarea:focus{border-color:#4a5570;}
   #ann-form textarea{min-height:52px;line-height:1.5;}
-  #ann-actions{display:flex;gap:6px;margin-top:9px;}
-  #ann-actions button{flex:1;padding:5px;border-radius:4px;border:1px solid #3a4257;
+  .ann-actions{display:flex;gap:6px;margin-top:9px;}
+  .ann-actions button{flex:1;padding:5px;border-radius:4px;border:1px solid #3a4257;
     background:#1e2430;color:#c4cbdb;cursor:pointer;font-size:11.5px;}
-  #ann-actions button.primary{background:#1c3d29;border-color:#3fbf6a;color:#8fdcac;}
-  #ann-actions button:hover{filter:brightness(1.2);}
+  .ann-actions button.primary{background:#1c3d29;border-color:#3fbf6a;color:#8fdcac;}
+  .ann-actions button:hover{filter:brightness(1.2);}
+  #ann-sync{font-size:10.5px;margin-top:6px;color:#8b93a6;}
+  #ann-sync.ok{color:#8fdcac;} #ann-sync.bad{color:#ff9db0;}
+  #ann-warn{color:#ffb86b;font-size:10.5px;line-height:1.5;margin-top:4px;display:none;}
   .ann-item{display:flex;gap:6px;align-items:flex-start;padding:5px 6px;border-radius:4px;
     background:#1b202a;margin-bottom:4px;cursor:pointer;}
   .ann-item:hover{background:#222836;}
@@ -89,10 +116,12 @@
   panel.id = 'ann-panel';
   panel.innerHTML = `
     <h4>人工标注</h4>
-    <div class="hint">开启后在图上点一下，标出问题的<b>大致位置</b>，
-      再选类型、写下该怎么改。标完点"导出"。</div>
+    <div class="hint">在图上点一下，标出问题的<b>大致位置</b>，再选类型、写下该怎么改。
+      保存后自动记录，不用手动导出。黄色虚线框是 v1 里模型会看到的范围（150 m），
+      请尽量标在框内。</div>
     <div id="ann-form" style="display:none">
-      <div style="color:#ffd54a;font-size:10.5px">位置 x=<span id="ann-xy"></span></div>
+      <div style="color:#ffd54a;font-size:10.5px">位置 <span id="ann-xy"></span></div>
+      <div id="ann-warn">这个点在模型视野之外：会计入真值，但做不了 few-shot 判例。</div>
       <label>问题类型</label>
       <select id="ann-type">
         ${TYPES.map(t => `<option value="${t.k}">${t.label}（${t.k}）</option>`).join('')}
@@ -101,16 +130,17 @@
       <textarea id="ann-fix" placeholder="例：这条线应向南延长约 30 m，接到鼻端再并入主线"></textarea>
       <label>补充说明（可选）</label>
       <input id="ann-note" placeholder="例：影像上车行道仍在延续">
-      <div id="ann-actions">
+      <div class="ann-actions">
         <button class="primary" id="ann-save">保存</button>
         <button id="ann-cancel">取消</button>
       </div>
     </div>
     <div id="ann-list"></div>
-    <div id="ann-actions" style="margin-top:8px">
-      <button id="ann-export">导出标注（few-shot + 真值）</button>
+    <div class="hint" id="ann-count" style="margin-top:8px"></div>
+    <div id="ann-sync"></div>
+    <div class="ann-actions">
+      <button id="ann-export">下载备份 JSON</button>
     </div>
-    <div class="hint" id="ann-count" style="margin-top:6px"></div>
   `;
   stage.appendChild(panel);
 
@@ -124,24 +154,37 @@
   function toImage(clientX, clientY) {
     const r = stage.getBoundingClientRect();
     // 与主脚本相同的变换：translate(tf.x, tf.y) scale(tf.k)
-    return {
-      x: (clientX - r.left - window.tf.x) / window.tf.k,
-      y: (clientY - r.top - window.tf.y) / window.tf.k,
-    };
-  }
-  function toScreen(x, y) {
-    const r = stage.getBoundingClientRect();
-    return { x: r.left + window.tf.x + x * window.tf.k,
-             y: r.top + window.tf.y + y * window.tf.k };
+    const tf = V().tf;
+    return { x: (clientX - r.left - tf.x) / tf.k, y: (clientY - r.top - tf.y) / tf.k };
   }
 
   /* ---------------- 绘制标注 ---------------- */
-  function curCid() { return window.DATA.cands[window.cur].cid; }
+  function curCid() { return cand().cid; }
   function listFor(cid) { return ANNOTS[cid] || []; }
 
   function render() {
     const cid = curCid();
     svg.innerHTML = '';
+    // v1 的模型视野（150 m）。与"模型视野"图层画的是同一个框时就不重复画。
+    const mf = cand().model_fov, af = cand().annot_fov;
+    const same = mf && af && af.every((p, i) =>
+      Math.abs(p[0] - mf[i][0]) < 1 && Math.abs(p[1] - mf[i][1]) < 1);
+    if (annotMode && af && !same) {
+      const tx = document.createElementNS(svg.namespaceURI, 'text');
+      tx.setAttribute('x', af[1][0] - 8); tx.setAttribute('y', af[1][1] - 16);
+      tx.setAttribute('text-anchor', 'end'); tx.setAttribute('fill', '#ffd54a');
+      tx.setAttribute('font-size', '30'); tx.setAttribute('font-weight', '600');
+      tx.setAttribute('stroke', '#05070b'); tx.setAttribute('stroke-width', '4');
+      tx.setAttribute('paint-order', 'stroke');
+      tx.textContent = 'v1 视野 150 m';
+      svg.appendChild(tx);
+      const pg = document.createElementNS(svg.namespaceURI, 'polygon');
+      pg.setAttribute('points', cand().annot_fov.map(q => q.join(',')).join(' '));
+      pg.setAttribute('fill', 'none'); pg.setAttribute('stroke', '#ffd54a');
+      pg.setAttribute('stroke-width', 2); pg.setAttribute('stroke-dasharray', '10 8');
+      pg.setAttribute('opacity', .7);
+      svg.appendChild(pg);
+    }
     listFor(cid).forEach(a => {
       const t = TYPES.find(x => x.k === a.type) || TYPES[0];
       const on = editing === a.id;
@@ -219,7 +262,8 @@
     btn.textContent = annotMode ? '✎ 标注中…' : '✎ 标注模式';
     panel.classList.toggle('show', annotMode);
     stage.style.cursor = annotMode ? 'crosshair' : '';
-    if (!annotMode) { draft = null; editing = null; form.style.display = 'none'; render(); }
+    if (!annotMode) { draft = null; editing = null; form.style.display = 'none'; }
+    render();
   };
 
   // 与拖拽共存：位移小于 4px 才算点击
@@ -236,6 +280,7 @@
     draft = p; editing = null;
     form.style.display = 'block';
     panel.querySelector('#ann-xy').textContent = `${p.x.toFixed(0)}, ${p.y.toFixed(0)}`;
+    panel.querySelector('#ann-warn').style.display = inFov(cand(), p.x, p.y) ? 'none' : 'block';
     fixEl.value = ''; noteEl.value = '';
     typeSel.value = 'missing_lane';
     fixEl.focus();
@@ -251,9 +296,11 @@
       if (a) { a.type = typeSel.value; a.fix = fixEl.value; a.note = noteEl.value; }
     } else {
       const seq = Math.max(0, ...arr.map(x => x.seq || 0)) + 1;
-      arr.push({ id: uid(), seq, x: +draft.x.toFixed(1), y: +draft.y.toFixed(1),
+      const x = +draft.x.toFixed(1), y = +draft.y.toFixed(1);
+      arr.push({ id: uid(), seq, cid, x, y, xy_global: toGlobal(cand(), x, y),
+                 in_fov: inFov(cand(), x, y),
                  type: typeSel.value, fix: fixEl.value, note: noteEl.value,
-                 cid, at: new Date().toISOString() });
+                 at: new Date().toISOString() });
     }
     draft = null; editing = null; form.style.display = 'none';
     persist(); render();
@@ -267,42 +314,67 @@
     }
   });
 
-  function persist() {
+  /* ---------------- 存储 ---------------- */
+  const syncEl = panel.querySelector('#ann-sync');
+  function setSync(txt, cls) { syncEl.textContent = txt; syncEl.className = cls || ''; }
+  function allRows() { return Object.values(ANNOTS).flat(); }
+  function payload() {
+    const rows = allRows();
+    return { saved_at: new Date().toISOString(), n: rows.length, rows };
+  }
+  function saveLocal() {
     try { localStorage.setItem(LS, JSON.stringify(ANNOTS)); } catch (e) { /* 内存模式 */ }
   }
-
-  /* ---------------- 导出 ---------------- */
-  async function exportAnnots() {
-    const rows = [];
-    for (const [cid, arr] of Object.entries(ANNOTS)) {
-      for (const a of arr) rows.push(a);
-    }
-    const payload = { saved_at: new Date().toISOString(), n: rows.length,
-                      annots: ANNOTS, rows };
+  async function push() {
     try {
       const r = await fetch('api/annots', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(payload()),
       });
-      if (r.ok) {
-        const j = await r.json().catch(() => ({}));
-        alert(`已保存 ${j.n != null ? j.n : rows.length} 条到 annotations.json`);
-        return;
+      if (!r.ok) throw new Error(r.status);
+      const j = await r.json();
+      setSync(`✓ 已自动保存 ${j.n} 条到服务器`, 'ok');
+    } catch (e) {
+      setSync('✗ 没连上服务器，标注只存在本浏览器里；请用"下载备份 JSON"', 'bad');
+    }
+  }
+  function persist() { saveLocal(); push(); }
+
+  /* 打开页面时以服务端文件为准；服务端是空的而本地有，就把本地的推上去 */
+  async function pull() {
+    try {
+      const r = await fetch('api/annots', { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      const rows = (await r.json()).rows || [];
+      if (rows.length) {
+        for (const k of Object.keys(ANNOTS)) delete ANNOTS[k];
+        rows.forEach(a => (ANNOTS[a.cid] || (ANNOTS[a.cid] = [])).push(a));
+        saveLocal();
+        setSync(`✓ 已从服务器读到 ${rows.length} 条`, 'ok');
+        render();
+      } else if (allRows().length) {
+        push();
+      } else {
+        setSync('已连上服务器，保存后自动记录', 'ok');
       }
-    } catch (e) { /* 退回下载 */ }
-    const blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
+    } catch (e) {
+      setSync('✗ 没连上服务器，标注只存在本浏览器里；请用"下载备份 JSON"', 'bad');
+    }
+  }
+
+  panel.querySelector('#ann-export').onclick = () => {
+    const blob = new Blob([JSON.stringify(payload(), null, 1)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'annotations.json';
+    a.download = 'human_annots.json';
     a.click();
-  }
-  panel.querySelector('#ann-export').onclick = exportAnnots;
+  };
 
   /* ---------------- 接管 draw：换候选时同步重绘 ---------------- */
   const _draw = window.draw;
   window.draw = function () { _draw.apply(this, arguments); render(); };
-  window.addEventListener('load', () => setTimeout(render, 50));
-  setTimeout(render, 60);
+  render();
+  pull();
 
   window.ANNOTS = ANNOTS;
 })();

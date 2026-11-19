@@ -2,9 +2,10 @@
 
 输出
 ----
-viewer/img/<cid>.jpg      无标注的卫星裁剪（旋转后），2048 px
-viewer/viewer_data.js     window.DATA = {cands:[...]}，几何用裁剪图坐标
-viewer/thumbs/ 内嵌       列表用的缩略图（base64 直接在 js 里）
+ret/<ver>/viewer/img/<cid>.jpg      无标注的卫星裁剪（旋转后），2048 px
+ret/<ver>/viewer/viewer_data.js     window.DATA = {cands:[...]}，几何用裁剪图坐标
+ret/<ver>/viewer/thumbs/ 内嵌       列表用的缩略图（base64 直接在 js 里）
+（HTML/CSS/JS 源码在根目录 viewer/index.html、viewer/annotate.js，进 git）
 
 坐标：所有点都是"裁剪图坐标系"，原点左上，单位 = 底图像素。
 全局像素 -> 裁剪图: local = R(-ang)·(p - c) + S/2
@@ -14,6 +15,7 @@ import base64
 import io
 import json
 import os
+import shutil
 import sys
 
 import numpy as np
@@ -21,7 +23,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import geo  # noqa: E402
-from render import heading_at, rot  # noqa: E402
+from render import heading_at, rot, unrot  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 import paths  # noqa: E402
@@ -31,7 +33,30 @@ IMG = os.path.join(OUT, "img")
 SIZE = 2048
 MODEL = "claude-fable-5-2"
 WORK = paths.p("works", MODEL, "s1024")
-MODEL_SIZE = 1024          # 模型当时看到的图幅（坐标基准）
+ANNOT_FOV_M = 150.0        # 标注时提示的"模型视野"边长（v1 的图幅）
+ROTATE = False             # 底图是否按道路走向旋转。v1 起不旋转：图的上方就是正北
+CROPS = paths.p("crops")
+STALE = os.path.join(paths.RET, "_archive", "crops_stale_20261116")
+HUMAN = os.path.join(paths.RET, "human_annots.json")
+
+
+def model_frame(res, cid):
+    """模型当时看到的那张图的坐标系 {center_xy, crop_px, size, rotation_exact}。
+
+    新结果里 ask.py 直接记了 frame。v0 的老结果没有记，按当时用的裁剪图还原：
+    有 5 个候选的图在 T 型接合修复后重渲染过，它们的 v0 结论是看着旧图给的，
+    旧图的 meta 在 archive/crops_stale_20261116/ 里。
+    """
+    if res.get("frame"):
+        return res["frame"]
+    for root in (STALE, CROPS):
+        mf = os.path.join(root, cid, "meta.json")
+        if os.path.exists(mf):
+            m = json.load(open(mf, encoding="utf-8"))
+            return dict(center_xy=m["center_xy"], crop_px=m["crop_px"],
+                        size=res.get("size") or m["crop_px"],
+                        rotation_exact=m.get("rotation_exact", m["rotation_deg"]))
+    return None
 
 
 def clean_crop(im, cx, cy, S, ang):
@@ -112,8 +137,20 @@ def match_lane(lane_key, L):
     return None
 
 
-def build():
+def build(tag=None):
+    global WORK
+    if tag:
+        import glob
+        hits = sorted(glob.glob(paths.p("works", MODEL, f"s*_{tag}")))
+        if not hits:
+            sys.exit(f"找不到 ret/{paths.VER}/works/{MODEL}/s*_{tag}")
+        WORK = hits[0]
     os.makedirs(IMG, exist_ok=True)
+    # 查看器的 HTML/JS 源码在根目录（进 git），复制到产物目录供服务直接托管
+    for fn in ("index.html", "annotate.js"):
+        src = os.path.join(HERE, "viewer", fn)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(OUT, fn))
     C = json.load(open(os.path.join(HERE, "candidates.json")))["cands"]
     lanes = geo.load_lanes()
     im = geo.open_raster()
@@ -122,7 +159,7 @@ def build():
     for c in C:
         cid = c["cid"]
         cx, cy = c["x"], c["y"]
-        ang = heading_at(cx, cy, lanes)
+        ang = heading_at(cx, cy, lanes) if ROTATE else 0.0
         crop = clean_crop(im, cx, cy, SIZE, ang)
         crop.save(os.path.join(IMG, f"{cid}.jpg"), quality=90, subsampling=0, optimize=True)
         thumb = b64jpg(crop.resize((128, 128), Image.LANCZOS), 68)
@@ -140,19 +177,29 @@ def build():
                           hi=(ln["id"] in set(c["lanes"])), pts=pts))
 
         # ---- 模型结论
-        # 模型给的 where 是"看着像"的粗位置，实测中位偏差 11.6 m、p90 35 m，
-        # 所以把它锚定到所属 lane 的最近点上，另存原始点 + 偏差供查看器画参考线。
+        # 模型给的 where 是它那张图（1024 px ≈ 138 m）里的像素坐标；查看器底图是 2048 px
+        # ≈ 277 m、同样的原生分辨率，所以两者差的是一个平移（视野更大），不是 2 倍缩放。
+        # 这里统一走"模型图坐标 -> 整幅卫片坐标 -> 查看器坐标"，旋转角或中心不同也成立。
+        # 之后仍把点锚定到所属 lane 的最近点上，另存原始点 + 偏差供查看器画参考线。
         res = load_model(cid)
         parsed = (res.get(1) or {}).get("parsed") or {}
-        sc = SIZE / MODEL_SIZE
+        fr = model_frame(res.get(1) or {}, cid)
+        # v0 的 meta 只记了保留 1 位小数的旋转角；中心没变的候选，直接用这里算出的精确角
+        if fr and "rotation_exact" not in (res.get(1) or {}).get("frame", {}) \
+                and np.allclose(fr["center_xy"], [cx, cy], atol=1e-6) \
+                and abs(fr["rotation_exact"] - ang) < 0.06:
+            fr["rotation_exact"] = ang
         by_k = {x["k"]: x for x in L}
         verd = []
         for v in parsed.get("verdicts", []):
             w = v.get("where")
             raw = None
-            if isinstance(w, list) and len(w) == 2:
+            if fr and isinstance(w, list) and len(w) == 2:
                 try:
-                    raw = [round(float(w[0]) * sc, 1), round(float(w[1]) * sc, 1)]
+                    q = np.array([[float(w[0]), float(w[1])]]) * (fr["crop_px"] / fr["size"])
+                    g = unrot(q, fr["rotation_exact"], *fr["center_xy"], fr["crop_px"])
+                    q = rot(g, ang, cx, cy, SIZE)[0]
+                    raw = [round(float(q[0]), 1), round(float(q[1]), 1)]
                 except (TypeError, ValueError):
                     raw = None
             k = match_lane(v.get("lane"), L)
@@ -177,11 +224,28 @@ def build():
         k1, k2 = key(res.get(1)), key(res.get(2))
         stable = sorted([f"{a}|{b}" for a, b in (k1 & k2)])
 
+        # 模型图幅在查看器底图里的位置：同中心、同旋转，所以就是中央的方框。
+        # 标注时提示用户尽量标在框内（框外的点模型看不到，做不了 few-shot）。
+        side = ANNOT_FOV_M / geo.G
+        lo, hi_ = round((SIZE - side) / 2, 1), round((SIZE + side) / 2, 1)
+        fov = [[lo, lo], [hi_, lo], [hi_, hi_], [lo, hi_]]
+
+        # 当前展示的这批模型结论，当时模型实际看到的图幅（查看器底图坐标）。
+        # 通常是正中的方框；图在出结论之后重渲染过的候选，框会相对底图偏移/旋转。
+        mfov, mfov_m = None, None
+        if fr:
+            n = fr["crop_px"]
+            g = unrot([[0, 0], [n, 0], [n, n], [0, n]], fr["rotation_exact"],
+                      *fr["center_xy"], n)
+            mfov = [[round(float(x), 1), round(float(y), 1)] for x, y in rot(g, ang, cx, cy, SIZE)]
+            mfov_m = round(n * geo.G, 1)
+
         cands.append(dict(
             cid=cid, kind=c["kind"], reasons=c["reasons"], note=c["note"],
             roads=c["roads"], deg=c["deg"], n_hi=sum(1 for x in L if x["hi"]),
             severity=parsed.get("severity"), overall=parsed.get("overall"),
-            size=SIZE, rotation_deg=round(ang, 1),
+            size=SIZE, rotation_deg=round(ang, 1), rotation_exact=ang, annot_fov=fov,
+            model_fov=mfov, model_fov_m=mfov_m,
             ground_m=round(SIZE * geo.G, 1),
             pxPerM=round(1 / geo.G, 3),
             center_xy=[cx, cy], cand_xy=[SIZE / 2, SIZE / 2],
@@ -195,7 +259,7 @@ def build():
                                      separators=(",", ":")) + ";"
     open(os.path.join(OUT, "viewer_data.js"), "w", encoding="utf-8").write(js)
     mb = os.path.getsize(os.path.join(OUT, "viewer_data.js")) / 1e6
-    print(f"wrote viewer/viewer_data.js ({mb:.1f} MB), {len(cands)} candidates")
+    print(f"wrote {paths.rel(os.path.join(OUT, 'viewer_data.js'))} ({mb:.1f} MB), {len(cands)} candidates")
     tot = sum(os.path.getsize(os.path.join(IMG, f)) for f in os.listdir(IMG))
     print(f"images: {len(os.listdir(IMG))} files, {tot/1e6:.0f} MB")
 
@@ -219,8 +283,35 @@ def serve(port=8770, host="0.0.0.0"):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=OUT, **kw)
 
+        def _json(self, obj):
+            body = json.dumps(obj, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path.split("?")[0].rstrip("/") == "/api/annots":
+                data = dict(rows=[])
+                if os.path.exists(HUMAN):
+                    try:
+                        data = json.load(open(HUMAN, encoding="utf-8"))
+                    except ValueError:
+                        pass
+                return self._json(data)
+            return super().do_GET()
+
+        def end_headers(self):
+            # 查看器的 html/js 经常改，禁止浏览器缓存旧版本
+            if self.path.split("?")[0].endswith((".html", ".js", "/")):
+                self.send_header("Cache-Control", "no-store")
+            super().end_headers()
+
         def do_POST(self):
-            if self.path.rstrip("/") != "/api/mark":
+            path = self.path.rstrip("/")
+            if path not in ("/api/mark", "/api/annots"):
                 self.send_error(404)
                 return
             n = int(self.headers.get("Content-Length") or 0)
@@ -229,6 +320,19 @@ def serve(port=8770, host="0.0.0.0"):
             except ValueError:
                 self.send_error(400, "bad json")
                 return
+            if path == "/api/annots":
+                # 人工标注（位置 + 类型 + 改法）：浏览器每次保存都把全量发过来，整份覆盖。
+                # 覆盖前留一份 .bak，防止误操作把标注清空。
+                rows = [r for r in payload.get("rows", [])
+                        if isinstance(r, dict) and r.get("cid") and r.get("xy_global")]
+                if os.path.exists(HUMAN):
+                    os.replace(HUMAN, HUMAN + ".bak")
+                tmp = HUMAN + ".tmp"
+                json.dump(dict(saved_at=payload.get("saved_at"), n=len(rows), rows=rows),
+                          open(tmp, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+                os.replace(tmp, HUMAN)
+                print(f"[annots] {len(rows)} 条 -> {HUMAN}", flush=True)
+                return self._json({"ok": True, "n": len(rows)})
             # 与已有标注合并（按 cid|lane|problem 去重，新的覆盖旧的）
             old = {}
             if os.path.exists(ann_path):
@@ -271,7 +375,8 @@ def serve(port=8770, host="0.0.0.0"):
         print("查看器:")
         for u in dict.fromkeys(ips):
             print("  " + u)
-        print(f"标注保存到: {ann_path}")
+        print(f"核对结果(对/错)保存到: {ann_path}")
+        print(f"人工标注(位置/类型/改法)保存到: {HUMAN}")
         print("Ctrl-C 退出")
         try:
             httpd.serve_forever()
@@ -284,16 +389,18 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--serve", action="store_true", help="启动本地服务（带标注保存接口）")
     ap.add_argument("--port", type=int, default=8770)
+    ap.add_argument("--tag", help="展示哪一版的模型结论：ret/<ver>/works/<model>/s1024_<tag>/ ；不给就是该版基线")
+    ap.add_argument("--ver", help="产物版本目录 ret/<ver>/，默认 v1（也可设环境变量 VLM_RET_VERSION）")
     ap.add_argument("--host", default="0.0.0.0",
                     help="监听地址；远程访问用默认 0.0.0.0，只允许本机用 127.0.0.1")
-    ap.add_argument("--ver", help="产物版本目录 ret/<ver>/，默认 v0")
     a = ap.parse_args()
     if a.ver:
         paths.use(a.ver)
         OUT = paths.p("viewer")
         IMG = os.path.join(OUT, "img")
         WORK = paths.p("works", MODEL, "s1024")
+        CROPS = paths.p("crops")
     if a.serve:
         serve(a.port, a.host)
     else:
-        build()
+        build(a.tag)

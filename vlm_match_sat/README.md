@@ -1,4 +1,4 @@
-# merge_split2 — 用卫片核查已提取的车道中心线
+# vlm_match_sat — 用卫片核查已提取的车道中心线
 
 目标：给定卫片 + 已提取的 `Lane.geojson`，找出**提取结果与影像不符的地方**，重点在分支/合流和断头处。
 
@@ -133,7 +133,7 @@ review.py      →  sheet_*.png（人眼核查台）+ proposals_*.json（可执�
 ## 怎么跑
 
 ```bash
-cd /home/liufeng/data/lane-distill/merge_split2
+cd /home/liufeng/data/projects/vlm_projects/vlm_match_sat
 python candidates.py                       # 生成候选
 python render.py                            # 渲染 crop
 python ask.py run --model claude-fable-5-2 --size 1024 --workers 3
@@ -150,7 +150,7 @@ python webexport.py --serve --port 8770     # 起服务，浏览器开 http://12
 
 ## 交互式查看器
 
-`viewer/index.html` + `viewer/img/*.jpg`（干净底图，无烧入标记）+ `viewer_data.js`（几何）。
+`viewer/index.html`、`viewer/annotate.js` 是源码（进 git）；底图与几何数据由 `webexport.py` 生成到 `ret/<ver>/viewer/`（`img/*.jpg` + `viewer_data.js`）。
 
 标记全部是客户端 SVG 叠加，可逐层开关：
 
